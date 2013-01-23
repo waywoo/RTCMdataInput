@@ -1,0 +1,95 @@
+/* input obs data, navigation messages and sbas correction -------------------*/
+static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
+{
+    gtime_t time={0};
+    int i,nu,nr,n=0;
+  long last,count;
+    
+    trace(3,"infunc  : revs=%d iobsu=%d iobsr=%d isbs=%d\n",revs,iobsu,iobsr,isbs);
+    
+    if (0<=iobsu&&iobsu<obss.n) {
+        settime((time=obss.data[iobsu].time));
+        if (checkbrk("processing : %s Q=%d",time_str(time,0),solq)) {
+            aborts=1; showmsg("aborted"); return -1;
+        }
+    }
+    if (!revs) { /* input forward data */
+        if ((nu=nextobsf(&obss,&iobsu,1))<=0) return -1;
+        if (popt->intpref) {
+            for (;(nr=nextobsf(&obss,&iobsr,2))>0;iobsr+=nr)
+                if (timediff(obss.data[iobsr].time,obss.data[iobsu].time)>-DTTOL) break;
+        }
+        else {
+            for (i=iobsr;(nr=nextobsf(&obss,&i,2))>0;iobsr=i,i+=nr)
+                if (timediff(obss.data[i].time,obss.data[iobsu].time)>DTTOL) break;
+        }
+        nr=nextobsf(&obss,&iobsr,2);
+        for (i=0;i<nu&&n<MAXOBS;i++) obs[n++]=obss.data[iobsu+i];
+        for (i=0;i<nr&&n<MAXOBS;i++) obs[n++]=obss.data[iobsr+i];
+        iobsu+=nu;
+        
+        /* update sbas corrections */
+        while (isbs<sbss.n) {
+            time=gpst2time(sbss.msgs[isbs].week,sbss.msgs[isbs].tow);
+            
+            if (getbitu(sbss.msgs[isbs].msg,8,6)!=9) { /* except for geo nav */
+                sbsupdatecorr(sbss.msgs+isbs,&navs);
+            }
+            if (timediff(time,obs[0].time)>-1.0-DTTOL) break;
+            isbs++;
+        }
+        /* update lex corrections */
+        while (ilex<lexs.n) {
+            if (lexupdatecorr(lexs.msgs+ilex,&navs,&time)) {
+                if (timediff(time,obs[0].time)>-1.0-DTTOL) break;
+            }
+            ilex++;
+        }
+        /* update rtcm corrections */
+        if (fp_rtcm) {
+			
+			last=ftell(fp_rtcm);
+			for(count=0;count<last;count+=273)
+		    fseek(fp_rtcm,count-273,SEEK_SET);
+            if (rtcm.time.time==0) rtcm.time=obs[0].time;
+            while (input_rtcm3f(&rtcm,fp_rtcm)>=0) {
+                if (timediff(rtcm.time,obs[0].time)>=5.0) break;
+            }
+            for (i=0;i<MAXSAT;i++) navs.ssr[i]=rtcm.ssr[i];
+        }
+    }
+    else { /* input backward data */
+        if ((nu=nextobsb(&obss,&iobsu,1))<=0) return -1;
+        if (popt->intpref) {
+            for (;(nr=nextobsb(&obss,&iobsr,2))>0;iobsr-=nr)
+                if (timediff(obss.data[iobsr].time,obss.data[iobsu].time)<DTTOL) break;
+        }
+        else {
+            for (i=iobsr;(nr=nextobsb(&obss,&i,2))>0;iobsr=i,i-=nr)
+                if (timediff(obss.data[i].time,obss.data[iobsu].time)<-DTTOL) break;
+        }
+        nr=nextobsb(&obss,&iobsr,2);
+        for (i=0;i<nu&&n<MAXOBS;i++) obs[n++]=obss.data[iobsu-nu+1+i];
+        for (i=0;i<nr&&n<MAXOBS;i++) obs[n++]=obss.data[iobsr-nr+1+i];
+        iobsu-=nu;
+        
+        /* update sbas corrections */
+        while (isbs>=0) {
+            time=gpst2time(sbss.msgs[isbs].week,sbss.msgs[isbs].tow);
+            
+            if (getbitu(sbss.msgs[isbs].msg,8,6)!=9) { /* except for geo nav */
+                sbsupdatecorr(sbss.msgs+isbs,&navs);
+            }
+            if (timediff(time,obs[0].time)<1.0+DTTOL) break;
+            isbs--;
+        }
+        /* update lex corrections */
+        while (ilex>=0) {
+            if (lexupdatecorr(lexs.msgs+ilex,&navs,&time)) {
+                if (timediff(time,obs[0].time)<1.0+DTTOL) break;
+            }
+            ilex--;
+        }
+    }
+    return n;
+}
